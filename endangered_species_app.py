@@ -16,7 +16,7 @@ from folium import plugins
 
 # Load dataset from Excel file
 def load_data(file_path):
-    data = pd.read_excel(r"C:\Users\dhoni\Videos\jt3\Endangered_Species_Dataset.xlsx")
+    data = pd.read_excel("Endangered_Species_Dataset.xlsx")
     return data
 
 def preprocess_data(data):
@@ -136,7 +136,7 @@ def parameter_comparison(data, parameter):
 # Streamlit app
 
 # Pre-load the Excel file (update the file path as needed)
-data = pd.read_excel(r"C:\Users\dhoni\Videos\jt3\Endangered_Species_Dataset.xlsx")  # Change this to your file path
+data = pd.read_excel("Endangered_Species_Dataset.xlsx")  # Change this to your file path
 
 def main():
     st.set_page_config(page_title="Species Extinction Risk", layout="wide")
