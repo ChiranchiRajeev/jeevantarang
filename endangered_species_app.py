@@ -198,7 +198,9 @@ def compute_information_gain(clf, X_train, y_train):
 def main():
     st.set_page_config(page_title="Species Extinction Risk", layout="wide")
     st.title("JEEVANTARANG ⧖")
-
+    
+    st.markdown('<p style="font-size:16px;"><em>Guided by - Prof. Rajesh Gudapati</em></p>', unsafe_allow_html=True)
+    
     caution_message = """
     <p style="font-size: 14px;">
     <strong><span style="color: red;">Caution</span></strong><br>
