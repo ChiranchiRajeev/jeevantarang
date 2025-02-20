@@ -13,23 +13,30 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 import tempfile
 from folium import plugins
+from sklearn.tree import DecisionTreeClassifier, export_text
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.tree import plot_tree
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.metrics import confusion_matrix, classification_report
+
+
 
 # Load dataset from Excel file
 def load_data(file_path):
-    data = pd.read_excel("Endangered_Species_Dataset.xlsx")
+    data = pd.read_excel(r"C:\Users\dhoni\Music\jt2\Endangered_Species_Dataset.xlsx")
     return data
 
 def preprocess_data(data):
     label_encoders = {}
     categorical_columns = ['Region', 'Habitat_Type']
 
-    # Encode categorical columns
     for col in categorical_columns:
         le = LabelEncoder()
         data[col] = le.fit_transform(data[col])
         label_encoders[col] = le
 
-    # Scale numerical columns
     scaler = StandardScaler()
     numerical_columns = [
         'Current_Population', 'Population_Decline_Rate (%)', 'Average_Temperature (°C)',
@@ -37,16 +44,26 @@ def preprocess_data(data):
         'Migration_Distance (km)', 'Climate_Change_Risk (%)', 'Fragmentation_Risk (%)'
     ]
     data[numerical_columns] = scaler.fit_transform(data[numerical_columns])
+    
+    # Ensure 'Extinction_Risk (%)' is available
+    if 'Extinction_Risk (%)' in data.columns:
+        bins = [0, 33, 66, 100]
+        labels = ['Low', 'Medium', 'High']
+        data['Extinction_Risk_Class'] = pd.cut(data['Extinction_Risk (%)'], bins=bins, labels=labels)
+        
+        # Convert categories to numerical labels
+        le_risk = LabelEncoder()
+        data['Extinction_Risk_Class'] = le_risk.fit_transform(data['Extinction_Risk_Class'])
+    else:
+        raise ValueError("Column 'Extinction_Risk (%)' not found in dataset!")
 
-    # **Exclude 'Image_URL' from the feature set**
     X = data.drop(columns=['Species', 'Extinction_Risk (%)', 'Image_URL', 'Region', 'Habitat_Type'], errors='ignore')
-    y = data['Extinction_Risk (%)']
+    y = data['Extinction_Risk_Class']
+
     return X, y, scaler, label_encoders, numerical_columns, categorical_columns
 
 
-
 # Geospatial visualization with image URL
-
 def plot_species_on_map(data):
     m = folium.Map(location=[20, 0], zoom_start=2)
     
@@ -74,10 +91,6 @@ def plot_species_on_map(data):
             ).add_to(m)
 
     st_folium(m, width=800, height=500)
-
-
-
-
 
 def generate_report_with_graph(data):
     # Generate a bar plot for Species vs Extinction Risk
@@ -124,7 +137,6 @@ def generate_report_with_graph(data):
     # Provide the buffer as a downloadable file in Streamlit
     st.sidebar.download_button("Download PDF Report", pdf_buffer, file_name="species_report.pdf", mime="application/pdf")
 
-
 # Visualizations for parameter comparison
 def parameter_comparison(data, parameter):
     plt.figure(figsize=(10, 6))
@@ -133,23 +145,309 @@ def parameter_comparison(data, parameter):
     plt.xticks(rotation=90)
     st.pyplot(plt)
 
-# Streamlit app
+import numpy as np
+import streamlit as st
 
-# Pre-load the Excel file (update the file path as needed)
-data = pd.read_excel("Endangered_Species_Dataset.xlsx")  # Change this to your file path
+def compute_information_gain(clf, X_train, y_train):
+    """
+    Function to compute Information Gain (IG) for each feature and provide insights.
+    """
+
+    # Function to calculate entropy
+    def entropy(y):
+        unique, counts = np.unique(y, return_counts=True)
+        prob = counts / counts.sum()
+        return -np.sum(prob * np.log2(prob + 1e-9))  # Small epsilon to avoid log(0)
+
+    # Compute parent entropy (before any split)
+    parent_entropy = entropy(y_train)
+    IG_values = {}
+
+    # Loop through each feature in the dataset
+    for feature_idx in range(X_train.shape[1]):
+        feature_values = X_train.iloc[:, feature_idx]
+        split_value = np.median(feature_values)  # Using median as a split threshold
+        left_mask = feature_values <= split_value
+        right_mask = feature_values > split_value
+        
+        # Skip if the split is invalid (i.e., all values go to one side)
+        if left_mask.sum() == 0 or right_mask.sum() == 0:
+            continue  
+
+        # Compute entropy for left and right splits
+        left_entropy = entropy(y_train[left_mask])
+        right_entropy = entropy(y_train[right_mask])
+        
+        # Weighted entropy for the split
+        N = len(y_train)
+        N_left, N_right = left_mask.sum(), right_mask.sum()
+        
+        IG = parent_entropy - (N_left / N) * left_entropy - (N_right / N) * right_entropy
+        IG_values[X_train.columns[feature_idx]] = IG
+
+    # Sort features by highest Information Gain
+    IG_values = dict(sorted(IG_values.items(), key=lambda x: x[1], reverse=True))
+    
+    return IG_values
+
+# 📌 Add this after clf.fit(X_train, y_train)
+
+
+
 
 def main():
     st.set_page_config(page_title="Species Extinction Risk", layout="wide")
-
     st.title("JEEVANTARANG ⧖")
-    st.markdown("Explore species extinction risks with interactive data visualizations and insights.")
+    
+    file_path = r"C:\\Users\\dhoni\\Music\\jt2\\Endangered_Species_Dataset.xlsx"
+    data = load_data(file_path)
+    
+    if data is not None:
+        # Define features and target
+        features = [
+            "Current_Population", "Population_Decline_Rate (%)", "Average_Temperature (°C)",
+            "Climate_Change_Risk (%)", "Fragmentation_Risk (%)"
+        ]
+        target = "Extinction_Risk (%)"
 
-    # Dataset preview
-    st.subheader("Dataset Preview")
-    st.write(data.head())
+        st.sidebar.header("🌲 Random Forest Model")
 
-    # Sidebar for variable selection
-    st.sidebar.header("Model Configuration")
+        # Ensure features exist in the dataset
+        if not all(col in data.columns for col in features + [target]):
+            st.error("Missing necessary columns in the dataset. Ensure all specified features and the target column are present.")
+            return
+
+        rf_features = st.sidebar.multiselect("Select Features for Random Forest", features, default=features)
+
+        
+
+        if rf_features:
+            # Preprocess the data (adjusted to match the expected arguments of the function)
+            X, y, scaler, label_encoders, numerical_columns, categorical_columns = preprocess_data(data)
+            X = X[rf_features]
+
+            try:
+                # Split the data
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+                # Train the Random Forest model
+                rf_clf = RandomForestClassifier(n_estimators=100, max_depth=7, random_state=42)
+                rf_clf.fit(X_train, y_train)
+
+                # Make predictions
+                y_pred_rf = rf_clf.predict(X_test)
+                accuracy_rf = accuracy_score(y_test, y_pred_rf)
+                precision_rf = precision_score(y_test, y_pred_rf, average='weighted', zero_division=0)
+                recall_rf = recall_score(y_test, y_pred_rf, average='weighted', zero_division=0)
+
+                # Display performance metrics in the sidebar
+                st.sidebar.subheader("📊 Random Forest Performance")
+                st.sidebar.write(f"**Accuracy:** {accuracy_rf:.2f}")
+                st.sidebar.write(f"**Precision:** {precision_rf:.2f}")
+                st.sidebar.write(f"**Recall:** {recall_rf:.2f}")
+
+                # Provide feedback based on accuracy
+                if accuracy_rf > 0.8:
+                    st.sidebar.success("🌟 High accuracy! The model makes strong predictions.")
+                elif accuracy_rf > 0.6:
+                    st.sidebar.warning("⚠️ Moderate accuracy. Consider tuning hyperparameters.")
+                else:
+                    st.sidebar.error("🔻 Low accuracy! Consider adding more data or improving feature selection.")
+
+                # Display feature importance
+                st.subheader("🔥 Random Forest Feature Importance")
+                rf_feature_importance = pd.DataFrame({
+                    "Feature": rf_features,
+                    "Importance": rf_clf.feature_importances_
+                }).sort_values(by="Importance", ascending=False)
+
+                # Plot feature importance
+                plt.figure(figsize=(8, 5))
+                sns.barplot(x="Importance", y="Feature", data=rf_feature_importance, palette="coolwarm")
+                plt.title("Feature Importance in Random Forest")
+                st.pyplot(plt)
+
+            except ValueError as e:
+                st.sidebar.error(f"Error in Random Forest model training: {e}")
+
+   
+    st.sidebar.header("🔍 Decision Tree Model")
+    features = [
+        "Current_Population", "Population_Decline_Rate (%)", "Average_Temperature (°C)",
+        "Climate_Change_Risk (%)", "Fragmentation_Risk (%)"
+    ]
+    target = "Extinction_Risk (%)"
+    
+    selected_features = st.sidebar.multiselect("Select Features for Decision Tree", features, default=features)
+    selected_target = target
+    
+    
+    if selected_features and selected_target:
+        X, y, scaler, label_encoders, numerical_columns, categorical_columns = preprocess_data(data)
+        X = X[selected_features]
+    
+        
+        
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            clf = DecisionTreeClassifier(criterion='gini', max_depth=5, random_state=42)
+            clf.fit(X_train, y_train)
+            IG_results = compute_information_gain(clf, X_train, y_train)
+
+# Streamlit Sidebar Output with Insights
+            st.sidebar.subheader("📊 Information Gain for Each Feature")
+            for feature, ig in IG_results.items():
+                st.sidebar.write(f"**{feature}:** {ig:.4f}")
+
+# 📝 Display Insights in the Main Area
+            st.subheader("🔍 Insights from Information Gain Analysis(Decision Tree)")
+            if IG_results:
+                best_feature = max(IG_results, key=IG_results.get)
+                worst_feature = min(IG_results, key=IG_results.get)
+                st.write(f"✅ The **most important feature** is **{best_feature}** with an IG of **{IG_results[best_feature]:.4f}**.")
+                st.write(f"⚠️ The **least important feature** is **{worst_feature}** with an IG of **{IG_results[worst_feature]:.4f}**.")
+                st.write("🔹 Features with **higher IG values** contribute more to the decision-making process.")
+            else:
+                st.write("⚠️ No valid Information Gain could be calculated. Check the dataset!")
+            
+
+            y_pred = clf.predict(X_test)
+            
+            accuracy = accuracy_score(y_test, y_pred)
+            precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+            recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+            
+            st.sidebar.subheader("📊 Decision Tree Performance")
+            st.sidebar.write(f"**Accuracy:** {accuracy:.2f}")
+            if accuracy > 0.8:
+                st.sidebar.success("🔹 High accuracy! The model is making strong predictions.")
+            elif accuracy > 0.6:
+                st.sidebar.warning("⚠️ Moderate accuracy. Consider improving data quality or tuning the model.")
+            else:
+                st.sidebar.error("🔻 Low accuracy! The model might be overfitting or missing key features.")
+            
+            st.sidebar.write(f"**Precision:** {precision:.2f}")
+            if precision > 0.8:
+                st.sidebar.success("✅ High precision! Most predicted species are correct.")
+            elif precision > 0.6:
+                st.sidebar.warning("⚠️ Moderate precision. Some misclassifications exist.")
+            else:
+                st.sidebar.error("🔻 Low precision. The model is predicting incorrectly too often.")
+            
+            st.sidebar.write(f"**Recall:** {recall:.2f}")
+            if recall > 0.8:
+                st.sidebar.success("🟢 High recall! The model is detecting most species correctly.")
+            elif recall > 0.6:
+                st.sidebar.warning("⚠️ Moderate recall. Some species are being missed.")
+            else:
+                st.sidebar.error("🔻 Low recall. The model is failing to detect important cases.")
+            
+        except ValueError as e:
+            st.sidebar.error(f"Error in model training: {e}")
+             
+
+    st.subheader("📌 Decision Tree Visualization")
+# Plot the decision tree
+    plt.figure(figsize=(12, 6))
+    plot_tree(clf, feature_names=selected_features, class_names=["Low", "Medium", "High"], filled=True)
+    st.pyplot(plt)
+    # Plot feature importance
+    st.subheader("💡 Feature Importance")
+    feature_importance = pd.DataFrame({
+        "Feature": selected_features,
+        "Importance": clf.feature_importances_
+    }).sort_values(by="Importance", ascending=False)
+# Bar plot for feature importance
+    plt.figure(figsize=(8, 5))
+    sns.barplot(x="Importance", y="Feature", data=feature_importance, palette="viridis")
+    plt.title("Feature Importance in Decision Tree")
+    st.pyplot(plt)
+    
+    
+    # NAIVE BAYES MODEL
+    st.sidebar.header("🤖 Naïve Bayes Model")
+
+    # Feature Selection in Sidebar
+    all_features = [
+        "Current_Population", "Population_Decline_Rate (%)", "Average_Temperature (°C)",
+        "Climate_Change_Risk (%)", "Fragmentation_Risk (%)"
+    ]
+    selected_features = st.sidebar.multiselect("📌 Select Features for Naïve Bayes", all_features, default=all_features)
+
+    target_variable = "Extinction_Risk (%)"
+
+    # Ensure target variable exists
+    if target_variable not in data.columns:
+        st.sidebar.error(f"❌ Target variable '{target_variable}' not found in dataset!")
+    else:
+        # Preprocess Data
+        X, _, scaler, label_encoders, numerical_columns, categorical_columns = preprocess_data(data)
+
+        # Select chosen features
+        X = X[selected_features]
+        y_continuous = data[target_variable]  # Continuous target variable
+
+        # Convert Continuous Target into Categorical Labels (Low, Medium, High)
+        bins = [0, 20, 40, 100]  # Define risk levels
+        labels = ["Low", "Medium", "High"]
+        y = pd.cut(y_continuous, bins=bins, labels=labels)
+
+        try:
+            # Encode Target Labels (Convert Categories to Numeric Values)
+            from sklearn.preprocessing import LabelEncoder
+            label_encoder = LabelEncoder()
+            y = label_encoder.fit_transform(y)
+
+            # Train-Test Split
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        
+            nb_clf = GaussianNB()
+            nb_clf.fit(X_train, y_train)
+
+            # Predictions
+            y_pred_nb = nb_clf.predict(X_test)
+
+            # Performance Metrics
+            accuracy_nb = accuracy_score(y_test, y_pred_nb)
+            precision_nb = precision_score(y_test, y_pred_nb, average='weighted', zero_division=0)
+            recall_nb = recall_score(y_test, y_pred_nb, average='weighted', zero_division=0)
+
+            # Display Performance
+            st.sidebar.subheader("📊 Naïve Bayes Performance")
+            st.sidebar.write(f"**Accuracy:** {accuracy_nb:.2f}")
+            st.sidebar.write(f"**Precision:** {precision_nb:.2f}")
+            st.sidebar.write(f"**Recall:** {recall_nb:.2f}")
+
+            # Insights
+            st.subheader("🧠 Insights from Naïve Bayes Model")
+            if accuracy_nb > 0.8:
+                st.success("🌟 The model is highly accurate! This suggests a strong correlation between the chosen features and extinction risk.")
+            elif accuracy_nb > 0.6:
+                st.warning("⚠️ The model shows moderate accuracy. Consider refining features or using additional data.")
+            else:
+                st.error("🔻 Low accuracy detected! This might indicate a need for feature engineering or alternative models.")
+
+            # Feature Importance (Variance of Features)
+            st.subheader("📌 Feature Importance")
+
+            feature_variances = np.var(X_train, axis=0)
+            feature_importance = feature_variances / np.sum(feature_variances)
+
+            fig, ax = plt.subplots(figsize=(8, 4))
+            sns.barplot(x=feature_importance, y=X_train.columns, palette="viridis")
+            plt.xlabel("Importance Score")
+            plt.ylabel("Features")
+            plt.title("Feature Importance in Naïve Bayes Model")
+            st.pyplot(fig)
+
+        except ValueError as e:
+            st.sidebar.error(f"Error in Naïve Bayes model training: {e}")
+    
+
+
+    # LINEAR REGRESSION MODEL
+    st.sidebar.header("📈 Linear Regression Model")
     dependent_variable = st.sidebar.selectbox("Select Dependent Variable (Y):", data.columns)
     independent_variables = st.sidebar.multiselect(
         "Select Independent Variables (X):", [col for col in data.columns if col != dependent_variable]
@@ -264,6 +562,7 @@ def main():
         col2.write(f"**Fragmentation Risk**: {selected_row['Fragmentation_Risk (%)']}%")
         col2.write(f"**Extinction Risk**: {selected_row['Extinction_Risk (%)']}%")
 
+
         # Risk warnings
         if selected_row['Climate_Change_Risk (%)'] > 80 or selected_row['Fragmentation_Risk (%)'] > 70:
             st.warning("High extinction risk due to climate change or habitat fragmentation.")
@@ -292,3 +591,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+    
