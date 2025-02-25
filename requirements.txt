@@ -2,9 +2,9 @@ pandas
 numpy
 scikit-learn
 streamlit
+openpyxl
 seaborn
 matplotlib
 folium
 streamlit-folium
 fpdf
-openpyxl
